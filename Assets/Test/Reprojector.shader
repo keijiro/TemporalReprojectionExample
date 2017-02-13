@@ -44,7 +44,7 @@
         half rej = abs(d1 - d0) * 100;
         rej += any(uv0 < 0) + any(uv1 > 1 - _MainTex_TexelSize.xy);
 
-        return lerp(c0, fixed4(1, 0, 0, 0), rej);
+        return lerp(c0, fixed4(1, 0, 0, 0), saturate(rej));
     }
 
     fixed4 frag_composit(v2f_img i) : SV_Target
