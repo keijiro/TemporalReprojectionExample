@@ -5,6 +5,7 @@ public class Reprojector : MonoBehaviour
 {
     [SerializeField] Shader _shader;
     [SerializeField] int _sampleInterval = 60;
+    [SerializeField] bool _searchClosest;
 
     RenderTexture _historyTexture;
     Material _material;
@@ -49,6 +50,11 @@ public class Reprojector : MonoBehaviour
         }
         else
         {
+            if (_searchClosest)
+                _material.EnableKeyword("_SEARCH_CLOSEST");
+            else
+                _material.DisableKeyword("_SEARCH_CLOSEST");
+
             _material.SetTexture("_HistoryTex", oldHistory);
             Graphics.Blit(source, newHistory, _material, 0);
 
