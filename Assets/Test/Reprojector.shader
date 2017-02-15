@@ -3,23 +3,35 @@
     Properties
     {
         _MainTex("", 2D) = "white" {}
+        _ColorHistory("", 2D) = "white" {}
+        _PrevMotionDepth("", 2D) = "white" {}
     }
 
     CGINCLUDE
 
     #include "UnityCG.cginc"
 
+    sampler2D _MainTex;
+    float4 _MainTex_TexelSize;
+
     sampler2D_float _CameraDepthTexture;
     float4 _CameraDepthTexture_TexelSize;
 
     sampler2D_half _CameraMotionVectorsTexture;
+    float4 _CameraMotionVectorsTexture_TexelSize;
 
-    sampler2D _HistoryTex;
-    sampler2D _MainTex;
+    sampler2D _ColorHistory;
+    sampler2D_half _PrevMotionDepth;
 
-    float4 _MainTex_TexelSize;
+    float _DepthWeight;
+    float _MotionWeight;
+    float2 _DeltaTime;
 
-    const float sampleInterval = 1;
+    struct FragmentOutput
+    {
+        half4 colorHistory : SV_Target0;
+        half4 motionDepth : SV_Target1;
+    };
 
     // Z buffer depth to linear 0-1 depth
     // Handles orthographic projection correctly
@@ -31,57 +43,49 @@
         return (1.0 - isOrtho * z) / (isPers * z + _ZBufferParams.y);
     }
 
-    float3 CompareDepth(float3 min_uvd, float2 uv)
+    FragmentOutput FragmentInitialize(v2f_img i)
     {
-        float d = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, uv);
-        return d < min_uvd ? float3(uv, d) : min_uvd;
+        fixed4 c = tex2D(_MainTex, i.uv);
+        half2 m = tex2D(_CameraMotionVectorsTexture, i.uv);
+        half d = LinearizeDepth(SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, i.uv));
+
+        FragmentOutput o;
+        o.colorHistory = fixed4(c.rgb, 1);
+        o.motionDepth = half4(m, d, 0);
+        return o;
     }
 
-    float2 SearchClosest(float2 uv)
+    FragmentOutput FragmentUpdate(v2f_img i)
     {
-        float4 duv = _CameraDepthTexture_TexelSize.xyxy * float4(1, 1, -1, 0);
+        float2 uv1 = i.uv.xy;
+        half2 m1 = tex2D(_CameraMotionVectorsTexture, uv1);
+        half d1 = LinearizeDepth(SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, uv1));
 
-        float3 min_uvd = float3(uv, SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, uv));
+        float2 uv0 = uv1 - m1;
+        half3 md0 = tex2D(_PrevMotionDepth, uv0).xyz;
+        fixed4 c0 = tex2D(_ColorHistory, uv0);
 
-        min_uvd = CompareDepth(min_uvd, uv - duv.xy);
-        min_uvd = CompareDepth(min_uvd, uv - duv.wy);
-        min_uvd = CompareDepth(min_uvd, uv - duv.zy);
+        // Disocclusion test
+        float docc = abs(1 - d1 / md0.z) * _DepthWeight;
 
-        min_uvd = CompareDepth(min_uvd, uv + duv.zw);
-        min_uvd = CompareDepth(min_uvd, uv + duv.xw);
+        // Velocity weighting
+        float vw = distance(m1 * _DeltaTime.x, md0.xy * _DeltaTime.y) * _MotionWeight;
 
-        min_uvd = CompareDepth(min_uvd, uv + duv.zy);
-        min_uvd = CompareDepth(min_uvd, uv + duv.wy);
-        min_uvd = CompareDepth(min_uvd, uv + duv.xy);
+        // Out of screen test
+        float oscr = any(uv0 < 0) + any(uv0 > 1);
 
-        return min_uvd.xy;
+        float alpha = 1 - saturate(docc + oscr + vw);
+
+        FragmentOutput o;
+        o.colorHistory = fixed4(c0.rgb, min(c0.a, alpha));
+        o.motionDepth = half4(m1, d1, 0);
+        return o;
     }
 
-    fixed4 frag_reprojection(v2f_img i) : SV_Target
+    fixed4 FragmentComposite(v2f_img i) : SV_Target
     {
-        #if defined(_SEARCH_CLOSEST)
-        half2 movec = tex2D(_CameraMotionVectorsTexture, SearchClosest(i.uv)).rg;
-        #else
-        half2 movec = tex2D(_CameraMotionVectorsTexture, i.uv).rg;
-        #endif
-
-        float2 uv0 = i.uv - movec;
-        float2 uv1 = i.uv;
-
-        float d0 = LinearizeDepth(SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, uv0));
-        float d1 = LinearizeDepth(SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, uv1));
-
-        fixed4 c0 = tex2D(_HistoryTex, uv0);
-
-        half rej = abs(d1 - d0) * 100;
-        rej += any(uv0 < 0) + any(uv1 > 1 - _MainTex_TexelSize.xy);
-
-        return lerp(c0, fixed4(1, 0, 0, 0), saturate(rej));
-    }
-
-    fixed4 frag_composit(v2f_img i) : SV_Target
-    {
-        return tex2D(_HistoryTex, i.uv);
+        fixed4 c = tex2D(_ColorHistory, i.uv);
+        return fixed4(lerp(fixed3(1, 0, 0), c.rgb, c.a), 1);
     }
 
     ENDCG
@@ -92,16 +96,25 @@
         Pass
         {
             CGPROGRAM
-            #pragma multi_compile _ _SEARCH_CLOSEST
             #pragma vertex vert_img
-            #pragma fragment frag_reprojection
+            #pragma fragment FragmentInitialize
+            #pragma target 3.0
             ENDCG
         }
         Pass
         {
             CGPROGRAM
             #pragma vertex vert_img
-            #pragma fragment frag_composit
+            #pragma fragment FragmentUpdate
+            #pragma target 3.0
+            ENDCG
+        }
+        Pass
+        {
+            CGPROGRAM
+            #pragma vertex vert_img
+            #pragma fragment FragmentComposite
+            #pragma target 3.0
             ENDCG
         }
     }

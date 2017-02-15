@@ -3,25 +3,52 @@
 [RequireComponent(typeof(Camera))]
 public class Reprojector : MonoBehaviour
 {
-    [SerializeField] Shader _shader;
-    [SerializeField] int _sampleInterval = 60;
-    [SerializeField] bool _searchClosest;
+    #region Editor properties
 
-    RenderTexture _historyTexture;
+    [Space]
+    [SerializeField] float _motionWeight = 10;
+    [SerializeField] float _depthWeight = 2000;
+
+    [Space]
+    [SerializeField] int _sampleInterval = 60;
+
+    #endregion
+
+    #region Private members
+
+    [SerializeField, HideInInspector] Shader _shader;
+
     Material _material;
+
+    RenderTexture _colorHistory;
+    RenderTexture _prevMotionDepth;
+    RenderBuffer[] _mrt;
+
+    float _prevDeltaTime;
     int _frameCount;
+
+    #endregion
+
+    #region MonoBehaviour functions
 
     void Start()
     {
         _material = new Material(_shader);
+        _mrt = new RenderBuffer[2];
     }
 
     void OnDisable()
     {
-        if (_historyTexture != null)
+        if (_colorHistory != null)
         {
-            RenderTexture.ReleaseTemporary(_historyTexture);
-            _historyTexture = null;
+            RenderTexture.ReleaseTemporary(_colorHistory);
+            _colorHistory = null;
+        }
+
+        if (_prevMotionDepth != null)
+        {
+            RenderTexture.ReleaseTemporary(_prevMotionDepth);
+            _prevMotionDepth = null;
         }
     }
 
@@ -33,36 +60,45 @@ public class Reprojector : MonoBehaviour
     void OnPreCull()
     {
         var camera = GetComponent<Camera>();
-
-        camera.depthTextureMode |=
-            DepthTextureMode.MotionVectors | DepthTextureMode.Depth;
+        camera.depthTextureMode |= DepthTextureMode.MotionVectors | DepthTextureMode.Depth;
     }
 
     void OnRenderImage(RenderTexture source, RenderTexture destination)
     {
-        var oldHistory = _historyTexture;
-        var newHistory = RenderTexture.GetTemporary(source.width, source.height, 0, source.format);
+        var width = source.width;
+        var height = source.height;
 
-        if (_frameCount++ % _sampleInterval == 0)
-        {
-            Graphics.Blit(source, newHistory);
-            Graphics.Blit(source, destination);
-        }
-        else
-        {
-            if (_searchClosest)
-                _material.EnableKeyword("_SEARCH_CLOSEST");
-            else
-                _material.DisableKeyword("_SEARCH_CLOSEST");
+        var colorFormat = source.format;
+        var motionDepthFormat = RenderTextureFormat.ARGBHalf;
 
-            _material.SetTexture("_HistoryTex", oldHistory);
-            Graphics.Blit(source, newHistory, _material, 0);
+        var newColorHistory = RenderTexture.GetTemporary(width, height, 0, colorFormat);
+        var newMotionDepth = RenderTexture.GetTemporary(width, height, 0, motionDepthFormat);
 
-            _material.SetTexture("_HistoryTex", newHistory);
-            Graphics.Blit(source, destination, _material, 1);
-        }
+        _material.SetFloat("_DepthWeight", _depthWeight);
+        _material.SetFloat("_MotionWeight", _motionWeight);
 
-        if (oldHistory != null) RenderTexture.ReleaseTemporary(oldHistory);
-        _historyTexture = newHistory;
+        _material.SetTexture("_ColorHistory", _colorHistory);
+        _material.SetTexture("_PrevMotionDepth", _prevMotionDepth);
+
+        _material.SetVector("_DeltaTime", new Vector2(Time.deltaTime, _prevDeltaTime));
+
+        _mrt[0] = newColorHistory.colorBuffer;
+        _mrt[1] = newMotionDepth.colorBuffer;
+        Graphics.SetRenderTarget(_mrt, Graphics.activeDepthBuffer);
+
+        var setupPass = _frameCount++ % _sampleInterval == 0 ? 0 : 1;
+        Graphics.Blit(source, _material, setupPass);
+
+        _material.SetTexture("_ColorHistory", newColorHistory);
+        Graphics.Blit(source, destination, _material, 2);
+
+        if (_colorHistory != null) RenderTexture.ReleaseTemporary(_colorHistory);
+        if (_prevMotionDepth != null) RenderTexture.ReleaseTemporary(_prevMotionDepth);
+
+        _colorHistory = newColorHistory;
+        _prevMotionDepth = newMotionDepth;
+        _prevDeltaTime = Time.deltaTime;
     }
+
+    #endregion
 }
