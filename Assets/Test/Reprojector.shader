@@ -43,6 +43,32 @@
         return (1.0 - isOrtho * z) / (isPers * z + _ZBufferParams.y);
     }
 
+    float3 CompareDepth(float3 min_uvd, float2 uv)
+    {
+        float d = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, uv);
+        return d < min_uvd ? float3(uv, d) : min_uvd;
+    }
+
+    float2 SearchClosest(float2 uv)
+    {
+        float4 duv = _CameraDepthTexture_TexelSize.xyxy * float4(1, 1, -1, 0);
+
+        float3 min_uvd = float3(uv, SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, uv));
+
+        min_uvd = CompareDepth(min_uvd, uv - duv.xy);
+        min_uvd = CompareDepth(min_uvd, uv - duv.wy);
+        min_uvd = CompareDepth(min_uvd, uv - duv.zy);
+
+        min_uvd = CompareDepth(min_uvd, uv + duv.zw);
+        min_uvd = CompareDepth(min_uvd, uv + duv.xw);
+
+        min_uvd = CompareDepth(min_uvd, uv + duv.zy);
+        min_uvd = CompareDepth(min_uvd, uv + duv.wy);
+        min_uvd = CompareDepth(min_uvd, uv + duv.xy);
+
+        return min_uvd.xy;
+    }
+
     FragmentOutput FragmentInitialize(v2f_img i)
     {
         fixed4 c = tex2D(_MainTex, i.uv);
@@ -61,7 +87,9 @@
         half2 m1 = tex2D(_CameraMotionVectorsTexture, uv1);
         half d1 = LinearizeDepth(SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, uv1));
 
-        float2 uv0 = uv1 - m1;
+        half2 mc1 = tex2D(_CameraMotionVectorsTexture, SearchClosest(uv1)).xy;
+
+        float2 uv0 = uv1 - mc1;
         half3 md0 = tex2D(_PrevMotionDepth, uv0).xyz;
         fixed4 c0 = tex2D(_ColorHistory, uv0);
 
@@ -84,8 +112,10 @@
 
     fixed4 FragmentComposite(v2f_img i) : SV_Target
     {
-        fixed4 c = tex2D(_ColorHistory, i.uv);
-        return fixed4(lerp(fixed3(1, 0, 0), c.rgb, c.a), 1);
+        fixed4 co = tex2D(_MainTex, i.uv);
+        fixed4 ch = tex2D(_ColorHistory, i.uv);
+        //return fixed4(lerp(fixed3(0, 0, 0), fixed3(1, 0, 0) * distance(ch.rgb, co.rgb), ch.a), 1);
+        return fixed4(lerp(fixed3(1, 0, 0), ch.rgb, ch.a), 1);
     }
 
     ENDCG
