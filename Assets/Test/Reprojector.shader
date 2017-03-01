@@ -114,7 +114,6 @@
     {
         fixed4 co = tex2D(_MainTex, i.uv);
         fixed4 ch = tex2D(_ColorHistory, i.uv);
-        //return fixed4(lerp(fixed3(0, 0, 0), fixed3(1, 0, 0) * distance(ch.rgb, co.rgb), ch.a), 1);
         return fixed4(lerp(fixed3(1, 0, 0), ch.rgb, ch.a), 1);
     }
 
