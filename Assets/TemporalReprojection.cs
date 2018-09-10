@@ -24,15 +24,17 @@ sealed class TemporalReprojectionRenderer : PostProcessEffectRenderer<TemporalRe
 {
     static class ShaderIDs
     {
-        internal static readonly int DepthWeight     = Shader.PropertyToID("_DepthWeight");
-        internal static readonly int MotionWeight    = Shader.PropertyToID("_MotionWeight");
-        internal static readonly int ColorHistory    = Shader.PropertyToID("_ColorHistory");
-        internal static readonly int PrevMotionDepth = Shader.PropertyToID("_PrevMotionDepth");
-        internal static readonly int DeltaTime       = Shader.PropertyToID("_DeltaTime");
+        internal static readonly int DepthWeight  = Shader.PropertyToID("_DepthWeight");
+        internal static readonly int MotionWeight = Shader.PropertyToID("_MotionWeight");
+        internal static readonly int UVRemap      = Shader.PropertyToID("_UVRemap");
+        internal static readonly int PrevUVRemap  = Shader.PropertyToID("_PrevUVRemap");
+        internal static readonly int PrevMoDepth  = Shader.PropertyToID("_PrevMoDepth");
+        internal static readonly int DeltaTime    = Shader.PropertyToID("_DeltaTime");
     }
 
-    RenderTexture _colorHistory;
-    RenderTexture _prevMotionDepth;
+    RenderTexture _lastFrame;
+    RenderTexture _prevUVRemap;
+    RenderTexture _prevMoDepth;
 
     RenderTargetIdentifier[] _mrt = new RenderTargetIdentifier[2];
 
@@ -41,18 +43,9 @@ sealed class TemporalReprojectionRenderer : PostProcessEffectRenderer<TemporalRe
 
     public override void Release()
     {
-        if (_colorHistory != null)
-        {
-            RenderTexture.ReleaseTemporary(_colorHistory);
-            _colorHistory = null;
-        }
-
-        if (_prevMotionDepth != null)
-        {
-            RenderTexture.ReleaseTemporary(_prevMotionDepth);
-            _prevMotionDepth = null;
-        }
-
+        if (_lastFrame != null) RenderTexture.ReleaseTemporary(_lastFrame);
+        if (_prevUVRemap != null) RenderTexture.ReleaseTemporary(_prevUVRemap);
+        if (_prevMoDepth != null) RenderTexture.ReleaseTemporary(_prevMoDepth);
         base.Release();
     }
 
@@ -66,40 +59,48 @@ sealed class TemporalReprojectionRenderer : PostProcessEffectRenderer<TemporalRe
         var cmd = context.command;
         cmd.BeginSample("TemporalReprojection");
 
-        // First pass: Reprojection from the previous frame
-
         // Allocate RTs for storing the next frame state.
-        var newColorHistory = RenderTexture.GetTemporary(context.width, context.height, 0, RenderTextureFormat.ARGBHalf);
-        var newMotionDepth = RenderTexture.GetTemporary(context.width, context.height, 0, RenderTextureFormat.ARGBHalf);
-
-        _mrt[0] = newColorHistory.colorBuffer;
-        _mrt[1] = newMotionDepth.colorBuffer;
+        var uvRemap = RenderTexture.GetTemporary(context.width, context.height, 0, RenderTextureFormat.ARGBHalf);
+        var moDepth = RenderTexture.GetTemporary(context.width, context.height, 0, RenderTextureFormat.ARGBHalf);
+        _mrt[0] = uvRemap.colorBuffer;
+        _mrt[1] = moDepth.colorBuffer;
 
         // Set the shader uniforms.
         var sheet = context.propertySheets.Get(Shader.Find("Hidden/TemporalReprojection"));
-
         sheet.properties.SetFloat(ShaderIDs.DepthWeight, settings.depthWeight);
         sheet.properties.SetFloat(ShaderIDs.MotionWeight, settings.motionWeight);
-
-        if (_colorHistory != null) sheet.properties.SetTexture(ShaderIDs.ColorHistory, _colorHistory);
-        if (_prevMotionDepth != null) sheet.properties.SetTexture(ShaderIDs.PrevMotionDepth, _prevMotionDepth);
-
+        if (_prevUVRemap != null) sheet.properties.SetTexture(ShaderIDs.PrevUVRemap, _prevUVRemap);
+        if (_prevMoDepth != null) sheet.properties.SetTexture(ShaderIDs.PrevMoDepth, _prevMoDepth);
         sheet.properties.SetVector(ShaderIDs.DeltaTime, new Vector2(Time.deltaTime, _prevDeltaTime));
 
-        // Apply the shader (0:init, 1:update)
-        var setupPass = (_frameCount++ % Mathf.Max(1, settings.sampleInterval) == 0) ? 0 : 1;
-        cmd.BlitFullscreenTriangle(context.source, _mrt, newColorHistory.depthBuffer, sheet, setupPass);
+        // Detect frame interval.
+        if (_frameCount++ % Mathf.Max(1, settings.sampleInterval) == 0)
+        {
+            // Update the last frame store.
+            if (_lastFrame != null) RenderTexture.ReleaseTemporary(_lastFrame);
+            _lastFrame = RenderTexture.GetTemporary(context.width, context.height, 0, RenderTextureFormat.ARGBHalf);
+            cmd.BlitFullscreenTriangle(context.source, _lastFrame);
+
+            // Reset pass
+            cmd.BlitFullscreenTriangle(context.source, _mrt, uvRemap.depthBuffer, sheet, 0);
+        }
+        else
+        {
+            // Temporal reprojection pass
+            cmd.BlitFullscreenTriangle(context.source, _mrt, uvRemap.depthBuffer, sheet, 1);
+        }
 
         // Second pass: Composition
-        cmd.BlitFullscreenTriangle(newColorHistory, context.destination, sheet, 2);
+        sheet.properties.SetTexture(ShaderIDs.UVRemap, uvRemap);
+        cmd.BlitFullscreenTriangle(_lastFrame, context.destination, sheet, 2);
 
         // Discard the previous frame state.
-        if (_colorHistory != null) RenderTexture.ReleaseTemporary(_colorHistory);
-        if (_prevMotionDepth != null) RenderTexture.ReleaseTemporary(_prevMotionDepth);
+        if (_prevUVRemap != null) RenderTexture.ReleaseTemporary(_prevUVRemap);
+        if (_prevMoDepth != null) RenderTexture.ReleaseTemporary(_prevMoDepth);
 
         // Update the internal state.
-        _colorHistory = newColorHistory;
-        _prevMotionDepth = newMotionDepth;
+        _prevUVRemap = uvRemap;
+        _prevMoDepth = moDepth;
         _prevDeltaTime = Time.deltaTime;
 
         cmd.EndSample("TemporalReprojection");

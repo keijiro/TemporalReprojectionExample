@@ -14,8 +14,9 @@ Shader "Hidden/TemporalReprojection"
     TEXTURE2D_SAMPLER2D(_MainTex, sampler_MainTex);
     TEXTURE2D_SAMPLER2D(_CameraDepthTexture, sampler_CameraDepthTexture);
     TEXTURE2D_SAMPLER2D(_CameraMotionVectorsTexture, sampler_CameraMotionVectorsTexture);
-    TEXTURE2D_SAMPLER2D(_ColorHistory, sampler_ColorHistory);
-    TEXTURE2D_SAMPLER2D(_PrevMotionDepth, sampler_PrevMotionDepth);
+    TEXTURE2D_SAMPLER2D(_UVRemap, sampler_UVRemap);
+    TEXTURE2D_SAMPLER2D(_PrevUVRemap, sampler_PrevUVRemap);
+    TEXTURE2D_SAMPLER2D(_PrevMoDepth, sampler_PrevMoDepth);
 
     float4 _CameraDepthTexture_TexelSize;
 
@@ -25,8 +26,8 @@ Shader "Hidden/TemporalReprojection"
 
     struct FragmentOutput
     {
-        half4 colorHistory : SV_Target0;
-        half4 motionDepth : SV_Target1;
+        half4 uvRemap : SV_Target0;
+        half4 moDepth : SV_Target1;
     };
 
     // Converts a raw depth value to a linear 0-1 depth value.
@@ -68,28 +69,27 @@ Shader "Hidden/TemporalReprojection"
 
     FragmentOutput FragInitialize(VaryingsDefault i)
     {
-        half4 c = SAMPLE_TEX2D(_MainTex, i.texcoord);
-        half2 m = SAMPLE_TEX2D(_CameraMotionVectorsTexture, i.texcoord);
+        half2 m = SAMPLE_TEX2D(_CameraMotionVectorsTexture, i.texcoord).xy;
         half d = LinearizeDepth(SAMPLE_DEPTH(_CameraDepthTexture, i.texcoord));
 
         FragmentOutput o;
-        o.colorHistory = half4(c.rgb, 1);
-        o.motionDepth = half4(m, d, 0);
+        o.uvRemap = half4(i.texcoord, 0, 1);
+        o.moDepth = half4(m, d, 0);
         return o;
     }
 
     FragmentOutput FragUpdate(VaryingsDefault i)
     {
         float2 uv1 = i.texcoord;
-        half2 m1 = SAMPLE_TEX2D(_CameraMotionVectorsTexture, uv1);
+        half2 m1 = SAMPLE_TEX2D(_CameraMotionVectorsTexture, uv1).xy;
         half d1 = LinearizeDepth(SAMPLE_DEPTH(_CameraDepthTexture, uv1));
 
         float2 uvc1 = SearchClosest(uv1);
         half2 mc1 = SAMPLE_TEX2D(_CameraMotionVectorsTexture, uvc1).xy;
 
         float2 uv0 = uv1 - mc1;
-        half3 md0 = SAMPLE_TEX2D(_PrevMotionDepth, uv0).xyz;
-        half4 c0 = SAMPLE_TEX2D(_ColorHistory, uv0);
+        half3 md0 = SAMPLE_TEX2D(_PrevMoDepth, uv0).xyz;
+        half4 c0 = SAMPLE_TEX2D(_PrevUVRemap, uv0);
 
         // Disocclusion test
         float docc = abs(1 - d1 / md0.z) * _DepthWeight;
@@ -103,15 +103,16 @@ Shader "Hidden/TemporalReprojection"
         float alpha = 1 - saturate(docc + oscr + vw);
 
         FragmentOutput o;
-        o.colorHistory = half4(c0.rgb, min(c0.a, alpha));
-        o.motionDepth = half4(m1, d1, 0);
+        o.uvRemap = half4(c0.xy, 0, min(c0.a, alpha));
+        o.moDepth = half4(m1, d1, 0);
         return o;
     }
 
     half4 FragComposite(VaryingsDefault i) : SV_Target
     {
-        half4 c = SAMPLE_TEX2D(_MainTex, i.texcoord);
-        return half4(lerp(half3(1, 0, 0), c.rgb, c.a), 1);
+        half4 remap = SAMPLE_TEX2D(_UVRemap, i.texcoord);
+        half4 c = SAMPLE_TEX2D(_MainTex, remap.xy);
+        return half4(lerp(half3(1, 0, 0), c.rgb, remap.a), 1);
     }
 
     ENDHLSL
