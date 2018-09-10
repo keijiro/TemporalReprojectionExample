@@ -1,4 +1,4 @@
-﻿Shader "Hidden/Reprojector"
+Shader "Hidden/Reprojector"
 {
     Properties
     {
